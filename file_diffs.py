@@ -49,7 +49,7 @@ class FileDiffMenuCommand(sublime_plugin.TextCommand):
                 self.view.run_command('file_diff_file')
             elif restored_menu_items[index] == TAB:
                 self.view.run_command('file_diff_tab')
-        self.view.window().show_quick_panel(menu_items, on_done)
+        sublime.set_timeout(lambda: self.view.window().show_quick_panel(menu_items, on_done), 10)
 
 
 class FileDiffCommand(sublime_plugin.TextCommand):
@@ -66,11 +66,18 @@ class FileDiffCommand(sublime_plugin.TextCommand):
             content = self.view.substr(sublime.Region(0, self.view.size()))
         return content
 
+    def is_path(self, path):
+        #due to Windows Exception when trying to open text: ValueError: path too long for Windows
+        try:
+            return os.path.exists(a)
+        except Exception as e:
+            return False
+
     def run_diff(self, a, b, from_file=None, to_file=None):
         from_content = a
         to_content = b
 
-        if os.path.exists(a):
+        if self.is_path(a):
             if from_file is None:
                 from_file = a
             with codecs.open(from_file, mode='U', encoding='utf-8') as f:
@@ -80,7 +87,7 @@ class FileDiffCommand(sublime_plugin.TextCommand):
             if from_file is None:
                 from_file = 'from_file'
 
-        if os.path.exists(b):
+        if self.is_path(b):
             if to_file is None:
                 to_file = b
             with codecs.open(to_file, mode='U', encoding='utf-8') as f:
@@ -210,7 +217,7 @@ class FileDiffFileCommand(FileDiffCommand):
                 diffs = self.run_diff(self.diff_content(), files[index],
                     from_file=self.view.file_name())
                 self.show_diff(diffs)
-        self.view.window().show_quick_panel(file_picker, on_done)
+        sublime.set_timeout(lambda: self.view.window().show_quick_panel(file_picker, on_done), 10)
 
     def find_files(self, folders):
         # Cannot access these settings!!  WHY!?
@@ -267,4 +274,4 @@ class FileDiffTabCommand(FileDiffCommand):
             on_done(0)
         else:
             menu_items = [os.path.basename(f) for f in files]
-            self.view.window().show_quick_panel(menu_items, on_done)
+            sublime.set_timeout(lambda: self.view.window().show_quick_panel(menu_items, on_done), 10)
