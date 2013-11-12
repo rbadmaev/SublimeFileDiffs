@@ -27,4 +27,7 @@
 
 	//deltawalker (DeltaWalker)
 	//"cmd": ["deltawalker", "-nosplash", "$file1", "$file2"]
+
+	//tortoiseMerge
+	//"cmd": ["tortoiseMerge", "/base:$file1", "/basename:$caption1", "/mine:$file2", "/minename:$caption2"]
 }
