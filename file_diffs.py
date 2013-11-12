@@ -1,12 +1,15 @@
 # coding: utf8
 import os
 import re
+import tempfile
 
 import sublime
 import sublime_plugin
 import difflib
 
 from fnmatch import fnmatch
+from threading import Thread
+from subprocess import Popen
 import codecs
 
 SETTINGS = sublime.load_settings('FileDiffs.sublime-settings')
@@ -51,84 +54,105 @@ class FileDiffMenuCommand(sublime_plugin.TextCommand):
                 self.view.run_command('file_diff_tab')
         sublime.set_timeout(lambda: self.view.window().show_quick_panel(menu_items, on_done), 10)
 
+class DiffUnit:
+    """docstring for DiffUnit"""
+    def __init__(self, file_name = None, content = None, caption = None):
+        super(DiffUnit, self).__init__()
+        assert(file_name or content)
+        self.__file_name = file_name
+        self.__content = content
+        self.__caption = caption
+        self.__is_the_temp_file = False
+
+    def __enter__(self):
+        None
+
+    def __exit__(self, type, value, traceback):
+        if self.__is_the_temp_file:
+            os.remove(self.__file_name)
+
+    def file_name(self):
+        if not self.__file_name:
+            assert(self.__content)
+            with tempfile.NamedTemporaryFile(delete=False) as f:
+                self.__is_the_temp_file = True
+                self.__file_name = f.name
+                f.write(self.__content.encode('utf-8'))
+
+        return self.__file_name
+
+    def content(self):
+        if not self.__content:
+            assert(self.__file_name)
+            with codecs.open(self.__file_name, mode='U', encoding='utf-8') as f:
+                self.__content = f.readlines()
+
+        return self.__content
+
+    def caption(self):
+        return self.__caption if self.__caption else self.file_name()
+
 
 class FileDiffCommand(sublime_plugin.TextCommand):
     def diff_content(self):
         content = ''
 
-        regions = [region for region in self.view.sel()]
-        for region in regions:
+        for region in self.view.sel():
             if region.empty():
                 continue
             content += self.view.substr(region)
 
         if not content:
+            if self.view.file_name() and not self.view.is_dirty():
+                return DiffUnit(file_name=self.view.file_name())
+
             content = self.view.substr(sublime.Region(0, self.view.size()))
-        return content
 
-    def is_path(self, path):
-        #due to Windows Exception when trying to open text: ValueError: path too long for Windows
-        try:
-            return os.path.exists(a)
-        except Exception as e:
-            return False
+        return DiffUnit(caption=(self.view.file_name() if self.view.file_name() else self.view.name()) + u"_(Unsaved)",
+                        content=content)
 
-    def run_diff(self, a, b, from_file=None, to_file=None):
-        from_content = a
-        to_content = b
+    def run_diff(self, unit1, unit2):
+        if SETTINGS.get('cmd'):
+            def run_excternal_diff_tool(unit1, unit2):
+                with unit1, unit2:
+                    command = SETTINGS.get('cmd')
+                    assert(command)
+                    command = [c.replace(u'$file1', unit1.file_name()) for c in command]
+                    command = [c.replace(u'$file2', unit2.file_name()) for c in command]
+                    command = [c.replace(u'$caption1', unit1.caption()) for c in command]
+                    command = [c.replace(u'$caption2', unit2.caption()) for c in command]
+                    process = Popen(command)
+                    process.communicate()
 
-        if self.is_path(a):
-            if from_file is None:
-                from_file = a
-            with codecs.open(from_file, mode='U', encoding='utf-8') as f:
-                from_content = f.readlines()
-        else:
-            from_content = a.splitlines(True)
-            if from_file is None:
-                from_file = 'from_file'
+            thread = Thread(target = run_excternal_diff_tool,
+                            args = (unit1, unit2))
+            thread.start()
+            return
 
-        if self.is_path(b):
-            if to_file is None:
-                to_file = b
-            with codecs.open(to_file, mode='U', encoding='utf-8') as f:
-                to_content = f.readlines()
-        else:
-            to_content = b.splitlines(True)
-            if to_file is None:
-                to_file = 'to_file'
+        diffs = list(difflib.unified_diff(  unit1.content(),
+                                            unit2.content(),
+                                            unit1.file_name(),
+                                            unit2.file_name()))
 
-        diffs = list(difflib.unified_diff(from_content, to_content, from_file, to_file))
-
-        FileDiffCommand.diff_with_external(self, a, b, from_file, to_file)
-        return diffs
-
-    def diff_with_external(self, a, b, from_file=None, to_file=None):
-        if os.path.exists(from_file) and os.path.exists(to_file):
-            command = SETTINGS.get('cmd')
-            if command is not None:
-                command = [c.replace(u'$file1', from_file) for c in command]
-                command = [c.replace(u'$file2', to_file) for c in command]
-                self.view.window().run_command("exec", {"cmd": command})
-
-    def show_diff(self, diffs):
-        if diffs:
-            scratch = self.view.window().new_file()
-            scratch.set_scratch(True)
-            scratch.set_syntax_file('Packages/Diff/Diff.tmLanguage')
-            scratch_edit = scratch.begin_edit('file_diffs')
-            scratch.insert(scratch_edit, 0, ''.join(diffs))
-            scratch.end_edit(scratch_edit)
-        else:
+        if not diffs:
             sublime.status_message('No Difference')
+            return
+
+        scratch = self.view.window().new_file()
+        scratch.set_scratch(True)
+        scratch.set_syntax_file('Packages/Diff/Diff.tmLanguage')
+        scratch_edit = scratch.begin_edit('file_diffs')
+        scratch.insert(scratch_edit, 0, ''.join(diffs))
+        scratch.end_edit(scratch_edit)
+
 
 
 class FileDiffClipboardCommand(FileDiffCommand):
     def run(self, edit, **kwargs):
         current = sublime.get_clipboard()
-        diffs = self.run_diff(self.diff_content(), current,
-            from_file=self.view.file_name(),
-            to_file='(clipboard)')
-        self.show_diff(diffs)
+        diffs = self.run_diff(
+                    self.diff_content(),
+                    DiffUnit(caption='(clipboard)', content=sublime.get_clipboard()))
 
 
 class FileDiffSelectionsCommand(FileDiffCommand):
@@ -170,26 +194,16 @@ class FileDiffSelectionsCommand(FileDiffCommand):
         if indent:
             diff = u"\n".join(line[len(indent):] for line in diff.splitlines())
 
-        self.show_diff(self.run_diff(current, diff,
-            from_file='first selection',
-            to_file='second selection'))
+        self.run_diff(
+            DiffUnit(caption='first selection', content=current),
+            DiffUnit(caption='second selection', content=diff))
 
 
 class FileDiffSavedCommand(FileDiffCommand):
     def run(self, edit, **kwargs):
-        content = ''
-        regions = [region for region in self.view.sel()]
-        for region in regions:
-            if region.empty():
-                continue
-            content += self.view.substr(region)
-        if not content:
-            content = self.view.substr(sublime.Region(0, self.view.size()))
-
-        diffs = self.run_diff(self.view.file_name(), content,
-            from_file=self.view.file_name(),
-            to_file=self.view.file_name() + u' (Unsaved)')
-        self.show_diff(diffs)
+        self.run_diff(
+            DiffUnit(file_name=self.view.file_name()),
+            self.diff_content())
 
 
 class FileDiffFileCommand(FileDiffCommand):
@@ -214,9 +228,10 @@ class FileDiffFileCommand(FileDiffCommand):
 
         def on_done(index):
             if index > -1:
-                diffs = self.run_diff(self.diff_content(), files[index],
-                    from_file=self.view.file_name())
-                self.show_diff(diffs)
+                self.run_diff(
+                    self.diff_content(),
+                    DiffUnit(file_name=files[index]))
+
         sublime.set_timeout(lambda: self.view.window().show_quick_panel(file_picker, on_done), 10)
 
     def find_files(self, folders):
@@ -265,10 +280,9 @@ class FileDiffTabCommand(FileDiffCommand):
 
         def on_done(index):
             if index > -1:
-                diffs = self.run_diff(self.diff_content(), contents[index],
-                    from_file=self.view.file_name(),
-                    to_file=files[index])
-                self.show_diff(diffs)
+                self.run_diff(
+                    self.diff_content(),
+                    DiffUnit(file_name = files[index], content=contents[index]))
 
         if len(files) == 1:
             on_done(0)
